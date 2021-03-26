@@ -391,7 +391,12 @@ const processSpanPromise = (async () => {
               providerName,
             });
           }
-          resolverConfiguration.fulfilledSources.add('opt');
+          Object.assign(resolverConfiguration.sources, {
+            sls: require('../lib/configuration/variables/sources/instance-dependent/get-sls')(
+              serverless
+            ),
+          });
+          resolverConfiguration.fulfilledSources.add('opt').add('sls');
           await resolveVariables(resolverConfiguration);
           eventuallyReportVariableResolutionErrors(configurationPath, configuration, variablesMeta);
         }
