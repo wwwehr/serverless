@@ -358,8 +358,11 @@ const processSpanPromise = (async () => {
         serverless.invokedInstance.invocationId = serverless.invocationId;
         serverless = serverless.invokedInstance;
       }
-      if (configuration) {
-        if (configuration.plugins && providerName) {
+
+      // IIFE for maintanance convenience
+      await (async () => {
+        if (!configuration || !providerName) return;
+        if (configuration.plugins) {
           // TODO: Remove "serverless.pluginManager.externalPlugins" check with next major
           if (serverless.pluginManager.externalPlugins) {
             if (serverless.pluginManager.externalPlugins.size) {
@@ -383,24 +386,24 @@ const processSpanPromise = (async () => {
             variablesMeta = null;
           }
         }
+        if (isHelpRequest) return;
+        if (!_.get(variablesMeta, 'size')) return;
 
-        if (!isHelpRequest && _.get(variablesMeta, 'size')) {
-          if (commandSchema) {
-            resolverConfiguration.options = filterSupportedOptions(options, {
-              commandSchema,
-              providerName,
-            });
-          }
-          Object.assign(resolverConfiguration.sources, {
-            sls: require('../lib/configuration/variables/sources/instance-dependent/get-sls')(
-              serverless
-            ),
+        if (commandSchema) {
+          resolverConfiguration.options = filterSupportedOptions(options, {
+            commandSchema,
+            providerName,
           });
-          resolverConfiguration.fulfilledSources.add('opt').add('sls');
-          await resolveVariables(resolverConfiguration);
-          eventuallyReportVariableResolutionErrors(configurationPath, configuration, variablesMeta);
         }
-      }
+        Object.assign(resolverConfiguration.sources, {
+          sls: require('../lib/configuration/variables/sources/instance-dependent/get-sls')(
+            serverless
+          ),
+        });
+        resolverConfiguration.fulfilledSources.add('opt').add('sls');
+        await resolveVariables(resolverConfiguration);
+        eventuallyReportVariableResolutionErrors(configurationPath, configuration, variablesMeta);
+      })();
 
       if (isHelpRequest && serverless.pluginManager.externalPlugins) {
         require('../lib/cli/render-help')(serverless.pluginManager.externalPlugins);
