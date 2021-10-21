@@ -275,6 +275,69 @@ describe('EventBridgeEvents', () => {
       expect(firstStatement.Effect).to.be.eq('Allow');
     });
 
+    it('should fail when trying to set RetryPolicy', async () => {
+      await expect(
+        runServerless({
+          fixture: 'function',
+          configExt: {
+            disabledDeprecations: ['AWS_EVENT_BRIDGE_CUSTOM_RESOURCE'],
+            functions: {
+              basic: {
+                events: [
+                  {
+                    eventBridge: {
+                      retryPolicy: {
+                        maximumEventAge: 4200,
+                        maximumRetryAttempts: 180,
+                      },
+                      pattern: {
+                        source: ['aws.something'],
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+          command: 'package',
+        })
+      ).to.be.eventually.rejected.and.have.property(
+        'code',
+        'ERROR_INVALID_RETRY_POLICY_TO_EVENT_BUS_CUSTOM_RESOURCE'
+      );
+    });
+
+    it('should fail when trying to set DeadLetterQueueArn', async () => {
+      await expect(
+        runServerless({
+          fixture: 'function',
+          configExt: {
+            disabledDeprecations: ['AWS_EVENT_BRIDGE_CUSTOM_RESOURCE'],
+            functions: {
+              basic: {
+                events: [
+                  {
+                    eventBridge: {
+                      deadLetterQueueArn: {
+                        'Fn::GetAtt': ['not-supported', 'Arn'],
+                      },
+                      pattern: {
+                        source: ['aws.something'],
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+          command: 'package',
+        })
+      ).to.be.eventually.rejected.and.have.property(
+        'code',
+        'ERROR_INVALID_DEAD_LETTER_CONFIG_TO_EVENT_BUS_CUSTOM_RESOURCE'
+      );
+    });
+
     it('should fail when trying to reference event bus via CF intrinsic function', async () => {
       await expect(
         runServerless({
@@ -282,7 +345,7 @@ describe('EventBridgeEvents', () => {
           configExt: {
             disabledDeprecations: ['AWS_EVENT_BRIDGE_CUSTOM_RESOURCE'],
             functions: {
-              foo: {
+              basic: {
                 events: [
                   {
                     eventBridge: {
@@ -310,10 +373,6 @@ describe('EventBridgeEvents', () => {
       let eventBusLogicalId;
       let ruleResource;
       let ruleTarget;
-      let inputPathRuleTarget;
-      let inputTransformerRuleTarget;
-      let disabledRuleResource;
-      let enabledRuleResource;
       const schedule = 'rate(10 minutes)';
       const eventBusName = 'nondefault';
       const pattern = {
@@ -332,6 +391,20 @@ describe('EventBridgeEvents', () => {
           eventTime: '$.time',
         },
       };
+      const retryPolicy = {
+        maximumEventAge: 7200,
+        maximumRetryAttempts: 9,
+      };
+
+      const deadLetterQueueArn = {
+        'Fn::GetAtt': ['test', 'Arn'],
+      };
+
+      const getRuleResourceEndingWith = (resources, ending) =>
+        Object.values(resources).find(
+          (resource) =>
+            resource.Type === 'AWS::Events::Rule' && resource.Properties.Name.endsWith(ending)
+        );
 
       before(async () => {
         const { cfTemplate, awsNaming } = await runServerless({
@@ -343,7 +416,7 @@ describe('EventBridgeEvents', () => {
               },
             },
             functions: {
-              foo: {
+              basic: {
                 events: [
                   {
                     eventBridge: {
@@ -385,6 +458,22 @@ describe('EventBridgeEvents', () => {
                       pattern,
                     },
                   },
+                  {
+                    eventBridge: {
+                      eventBus: eventBusName,
+                      schedule,
+                      pattern,
+                      retryPolicy,
+                    },
+                  },
+                  {
+                    eventBridge: {
+                      eventBus: eventBusName,
+                      schedule,
+                      pattern,
+                      deadLetterQueueArn,
+                    },
+                  },
                 ],
               },
             },
@@ -394,31 +483,8 @@ describe('EventBridgeEvents', () => {
         cfResources = cfTemplate.Resources;
         naming = awsNaming;
         eventBusLogicalId = naming.getEventBridgeEventBusLogicalId(eventBusName);
-        ruleResource = Object.values(cfResources).find(
-          (resource) =>
-            resource.Type === 'AWS::Events::Rule' && resource.Properties.Name.endsWith('1')
-        );
+        ruleResource = getRuleResourceEndingWith(cfResources, '1');
         ruleTarget = ruleResource.Properties.Targets[0];
-        const inputPathRuleResource = Object.values(cfResources).find(
-          (resource) =>
-            resource.Type === 'AWS::Events::Rule' && resource.Properties.Name.endsWith('2')
-        );
-        inputPathRuleTarget = inputPathRuleResource.Properties.Targets[0];
-        const inputTransformerRuleResource = Object.values(cfResources).find(
-          (resource) =>
-            resource.Type === 'AWS::Events::Rule' && resource.Properties.Name.endsWith('3')
-        );
-        inputTransformerRuleTarget = inputTransformerRuleResource.Properties.Targets[0];
-
-        disabledRuleResource = Object.values(cfResources).find(
-          (resource) =>
-            resource.Type === 'AWS::Events::Rule' && resource.Properties.Name.endsWith('4')
-        );
-
-        enabledRuleResource = Object.values(cfResources).find(
-          (resource) =>
-            resource.Type === 'AWS::Events::Rule' && resource.Properties.Name.endsWith('5')
-        );
       });
 
       it('should create an EventBus resource', () => {
@@ -434,15 +500,17 @@ describe('EventBridgeEvents', () => {
       });
 
       it('should correctly set State when disabled on a created rule', () => {
+        const disabledRuleResource = getRuleResourceEndingWith(cfResources, '4');
         expect(disabledRuleResource.Properties.State).to.equal('DISABLED');
       });
 
       it('should correctly set State when enabled on a created rule', () => {
+        const enabledRuleResource = getRuleResourceEndingWith(cfResources, '5');
         expect(enabledRuleResource.Properties.State).to.equal('ENABLED');
       });
 
       it('should correctly set EventPattern on a created rule', () => {
-        expect(ruleResource.Properties.EventPattern).to.deep.equal(JSON.stringify(pattern));
+        expect(ruleResource.Properties.EventPattern).to.deep.equal(pattern);
       });
 
       it('should correctly set Input on the target for the created rule', () => {
@@ -450,10 +518,14 @@ describe('EventBridgeEvents', () => {
       });
 
       it('should correctly set InputPath on the target for the created rule', () => {
+        const inputPathRuleResource = getRuleResourceEndingWith(cfResources, '2');
+        const inputPathRuleTarget = inputPathRuleResource.Properties.Targets[0];
         expect(inputPathRuleTarget.InputPath).to.deep.equal(inputPath);
       });
 
       it('should correctly set InputTransformer on the target for the created rule', () => {
+        const inputTransformerRuleResource = getRuleResourceEndingWith(cfResources, '3');
+        const inputTransformerRuleTarget = inputTransformerRuleResource.Properties.Targets[0];
         expect(inputTransformerRuleTarget.InputTransformer.InputPathsMap).to.deep.equal(
           inputTransformer.inputPathsMap
         );
@@ -462,17 +534,32 @@ describe('EventBridgeEvents', () => {
         );
       });
 
+      it('should support retryPolicy configuration', () => {
+        const retryPolicyRuleTarget = getRuleResourceEndingWith(cfResources, '6').Properties
+          .Targets[0];
+        expect(retryPolicyRuleTarget.RetryPolicy).to.deep.equal({
+          MaximumEventAgeInSeconds: 7200,
+          MaximumRetryAttempts: 9,
+        });
+      });
+
+      it('should support deadLetterQueueArn configuration', () => {
+        const deadLetterConfigRuleTarget = getRuleResourceEndingWith(cfResources, '7').Properties
+          .Targets[0];
+        expect(deadLetterConfigRuleTarget.DeadLetterConfig).to.have.property('Arn');
+      });
+
       it('should create a rule that depends on created EventBus', () => {
         expect(ruleResource.DependsOn).to.equal(eventBusLogicalId);
       });
 
       it('should create a rule that references correct function in target', () => {
-        expect(ruleTarget.Arn['Fn::GetAtt'][0]).to.equal(naming.getLambdaLogicalId('foo'));
+        expect(ruleTarget.Arn['Fn::GetAtt'][0]).to.equal(naming.getLambdaLogicalId('basic'));
       });
 
       it('should create a lambda permission resource that correctly references event bus in SourceArn', () => {
         const lambdaPermissionResource =
-          cfResources[naming.getEventBridgeLambdaPermissionLogicalId('foo', 1)];
+          cfResources[naming.getEventBridgeLambdaPermissionLogicalId('basic', 1)];
 
         expect(
           lambdaPermissionResource.Properties.SourceArn['Fn::Join'][1][5]['Fn::Join'][1][1]
@@ -495,7 +582,7 @@ describe('EventBridgeEvents', () => {
               },
             },
             functions: {
-              foo: {
+              basic: {
                 events: [
                   {
                     eventBridge: {
@@ -536,7 +623,7 @@ describe('EventBridgeEvents', () => {
 
       it('should create a lambda permission resource that correctly references arn event bus in SourceArn', () => {
         const lambdaPermissionResource =
-          cfResources[naming.getEventBridgeLambdaPermissionLogicalId('foo', 1)];
+          cfResources[naming.getEventBridgeLambdaPermissionLogicalId('basic', 1)];
 
         expect(
           lambdaPermissionResource.Properties.SourceArn['Fn::Join'][1][5]['Fn::Join'][1][1]
@@ -545,7 +632,7 @@ describe('EventBridgeEvents', () => {
 
       it('should create a lambda permission resource that correctly references CF event bus in SourceArn', () => {
         const lambdaPermissionResource =
-          cfResources[naming.getEventBridgeLambdaPermissionLogicalId('foo', 2)];
+          cfResources[naming.getEventBridgeLambdaPermissionLogicalId('basic', 2)];
 
         expect(
           lambdaPermissionResource.Properties.SourceArn['Fn::Join'][1][5]['Fn::Join'][1][1]
@@ -554,7 +641,7 @@ describe('EventBridgeEvents', () => {
 
       it('should create a lambda permission resource that correctly references explicit default event bus in SourceArn', () => {
         const lambdaPermissionResource =
-          cfResources[naming.getEventBridgeLambdaPermissionLogicalId('foo', 3)];
+          cfResources[naming.getEventBridgeLambdaPermissionLogicalId('basic', 3)];
 
         expect(
           lambdaPermissionResource.Properties.SourceArn['Fn::Join'][1][5]['Fn::Join'][1][1]
@@ -563,7 +650,7 @@ describe('EventBridgeEvents', () => {
 
       it('should create a lambda permission resource that correctly references implicit default event bus in SourceArn', () => {
         const lambdaPermissionResource =
-          cfResources[naming.getEventBridgeLambdaPermissionLogicalId('foo', 4)];
+          cfResources[naming.getEventBridgeLambdaPermissionLogicalId('basic', 4)];
 
         expect(
           lambdaPermissionResource.Properties.SourceArn['Fn::Join'][1][5]['Fn::Join'][1]

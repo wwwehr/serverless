@@ -2,6 +2,7 @@
 
 const expect = require('chai').expect;
 const sinon = require('sinon');
+const runServerless = require('../../../../../../../../../utils/run-serverless');
 const AwsCompileApigEvents = require('../../../../../../../../../../lib/plugins/aws/package/compile/events/apiGateway/index');
 const Serverless = require('../../../../../../../../../../lib/Serverless');
 const AwsProvider = require('../../../../../../../../../../lib/plugins/aws/provider');
@@ -410,39 +411,6 @@ describe('#validate()', () => {
     expect(authorizer.resultTtlInSeconds).to.equal(0);
     expect(authorizer.identitySource).to.equal('method.request.header.Custom');
     expect(authorizer.identityValidationExpression).to.equal('foo');
-  });
-
-  it('should process cors defaults', () => {
-    awsCompileApigEvents.serverless.service.functions = {
-      first: {
-        events: [
-          {
-            http: {
-              method: 'POST',
-              path: '/foo/bar',
-              cors: true,
-            },
-          },
-        ],
-      },
-    };
-
-    const validated = awsCompileApigEvents.validate();
-    expect(validated.events).to.be.an('Array').with.length(1);
-    expect(validated.events[0].http.cors).to.deep.equal({
-      headers: [
-        'Content-Type',
-        'X-Amz-Date',
-        'Authorization',
-        'X-Api-Key',
-        'X-Amz-Security-Token',
-        'X-Amz-User-Agent',
-      ],
-      methods: ['OPTIONS', 'POST'],
-      origin: '*',
-      origins: ['*'],
-      allowCredentials: false,
-    });
   });
 
   it('should accept cors headers as a single string value', () => {
@@ -1127,123 +1095,6 @@ describe('#validate()', () => {
     expect(() => awsCompileApigEvents.validate()).to.throw(Error);
   });
 
-  it('should show a warning message when using request / response config with HTTP-PROXY', () => {
-    awsCompileApigEvents.serverless.service.functions = {
-      first: {
-        events: [
-          {
-            http: {
-              method: 'GET',
-              path: 'users/list',
-              integration: 'http-proxy',
-              request: {
-                uri: 'http://www.example.com',
-                template: {
-                  'template/1': '{ "stage" : "$context.stage" }',
-                  'template/2': '{ "httpMethod" : "$context.httpMethod" }',
-                },
-              },
-              response: {
-                template: "$input.path('$.foo')",
-              },
-            },
-          },
-        ],
-      },
-    };
-    // initialize so we get the log method from the CLI in place
-    return serverless.init().then(() => {
-      const logStub = sinon.stub(serverless.cli, 'log');
-
-      awsCompileApigEvents.validate();
-
-      expect(logStub.calledTwice).to.be.equal(true);
-      expect(logStub.args[0][0].length).to.be.at.least(1);
-    });
-  });
-
-  it('should not show a warning message when using request.parameter with HTTP-PROXY', () => {
-    awsCompileApigEvents.serverless.service.functions = {
-      first: {
-        events: [
-          {
-            http: {
-              method: 'GET',
-              path: 'users/list',
-              integration: 'http-proxy',
-              request: {
-                uri: 'http://www.example.com',
-                parameters: {
-                  querystrings: {
-                    foo: true,
-                    bar: false,
-                  },
-                  paths: {
-                    foo: true,
-                    bar: false,
-                  },
-                  headers: {
-                    foo: true,
-                    bar: false,
-                  },
-                },
-              },
-            },
-          },
-        ],
-      },
-    };
-    // initialize so we get the log method from the CLI in place
-    return serverless.init().then(() => {
-      const logStub = sinon.stub(serverless.cli, 'log');
-
-      awsCompileApigEvents.validate();
-
-      expect(logStub.called).to.be.equal(false);
-    });
-  });
-
-  it('should remove non-parameter or uri request/response config with HTTP-PROXY', () => {
-    awsCompileApigEvents.serverless.service.functions = {
-      first: {
-        events: [
-          {
-            http: {
-              method: 'GET',
-              path: 'users/list',
-              integration: 'http-proxy',
-              request: {
-                uri: 'http://www.example.com',
-                template: {
-                  'template/1': '{ "stage" : "$context.stage" }',
-                },
-                parameters: {
-                  paths: {
-                    foo: true,
-                  },
-                },
-              },
-              response: {},
-            },
-          },
-        ],
-      },
-    };
-    // initialize so we get the log method from the CLI in place
-    return serverless.init().then(() => {
-      // don't want to print the logs in this test
-      sinon.stub(serverless.cli, 'log');
-
-      const validated = awsCompileApigEvents.validate();
-      expect(validated.events).to.be.an('Array').with.length(1);
-      expect(validated.events[0].http.response).to.equal(undefined);
-      expect(validated.events[0].http.request.uri).to.equal('http://www.example.com');
-      expect(validated.events[0].http.request.parameters).to.deep.equal({
-        'method.request.path.foo': true,
-      });
-    });
-  });
-
   it('should support MOCK integration', () => {
     awsCompileApigEvents.serverless.service.functions = {
       first: {
@@ -1283,40 +1134,6 @@ describe('#validate()', () => {
     expect(validated.events).to.be.an('Array').with.length(1);
     expect(validated.events[0].http.integration).to.equal('AWS');
     expect(validated.events[0].http.async);
-  });
-
-  it('should show a warning message when using request / response config with LAMBDA-PROXY', () => {
-    awsCompileApigEvents.serverless.service.functions = {
-      first: {
-        events: [
-          {
-            http: {
-              method: 'GET',
-              path: 'users/list',
-              integration: 'lambda-proxy',
-              request: {
-                template: {
-                  'template/1': '{ "stage" : "$context.stage" }',
-                  'template/2': '{ "httpMethod" : "$context.httpMethod" }',
-                },
-              },
-              response: {
-                template: "$input.path('$.foo')",
-              },
-            },
-          },
-        ],
-      },
-    };
-    // initialize so we get the log method from the CLI in place
-    return serverless.init().then(() => {
-      const logStub = sinon.stub(serverless.cli, 'log');
-
-      awsCompileApigEvents.validate();
-
-      expect(logStub.calledTwice).to.be.equal(true);
-      expect(logStub.args[0][0].length).to.be.at.least(1);
-    });
   });
 
   it('should not show a warning message when using request.parameter with LAMBDA-PROXY', () => {
@@ -1587,5 +1404,71 @@ describe('#validate()', () => {
         pattern: '([\\s\\S]*\\[504\\][\\s\\S]*)|(.*Task timed out after \\d+\\.\\d+ seconds$)',
       },
     });
+  });
+});
+
+describe('test/unit/lib/plugins/aws/package/compile/events/apiGateway/lib/validate.test.js', () => {
+  let cfTemplate;
+  let cfResources;
+  let naming;
+
+  const getApiGatewayMethod = (path, method) =>
+    cfResources[naming.getMethodLogicalId(naming.normalizePath(path), method)];
+
+  before(async () => {
+    const result = await runServerless({
+      fixture: 'function',
+      command: 'package',
+      configExt: {
+        functions: {
+          corsDefault: {
+            handler: 'index.handler',
+            events: [
+              {
+                http: {
+                  method: 'POST',
+                  path: '/cors-default-set-by-boolean',
+                  cors: true,
+                },
+              },
+              {
+                http: {
+                  method: 'POST',
+                  path: '/cors-default-set-by-object',
+                  cors: {},
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+    cfTemplate = result.cfTemplate;
+    cfResources = cfTemplate.Resources;
+    naming = result.awsNaming;
+  });
+
+  it('should process cors defaults', async () => {
+    const expected = {
+      'method.response.header.Access-Control-Allow-Headers': `'${[
+        'Content-Type',
+        'X-Amz-Date',
+        'Authorization',
+        'X-Api-Key',
+        'X-Amz-Security-Token',
+        'X-Amz-User-Agent',
+      ].join(',')}'`,
+      'method.response.header.Access-Control-Allow-Methods': `'${['OPTIONS', 'POST'].join(',')}'`,
+      'method.response.header.Access-Control-Allow-Origin': "'*'",
+    };
+
+    expect(
+      getApiGatewayMethod('/cors-default-set-by-boolean', 'OPTIONS').Properties.Integration
+        .IntegrationResponses[0].ResponseParameters
+    ).to.deep.eq(expected);
+    expect(
+      getApiGatewayMethod('/cors-default-set-by-object', 'OPTIONS').Properties.Integration
+        .IntegrationResponses[0].ResponseParameters
+    ).to.deep.eq(expected);
   });
 });

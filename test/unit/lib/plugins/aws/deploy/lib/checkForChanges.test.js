@@ -450,7 +450,6 @@ describe('checkForChanges', () => {
         expect(normalizeCloudFormationTemplateStub).to.have.been.calledOnce;
         expect(globbySyncStub).to.have.been.calledOnce;
         expect(readFileStub).to.have.been.calledOnce;
-        expect(awsDeploy.serverless.cli.log).to.have.been.calledOnce;
         expect(normalizeCloudFormationTemplateStub).to.have.been.calledWithExactly(
           awsDeploy.serverless.service.provider.compiledCloudFormationTemplate
         );
@@ -484,7 +483,6 @@ describe('checkForChanges', () => {
           expect(normalizeCloudFormationTemplateStub).to.have.been.calledOnce;
           expect(globbySyncStub).to.have.been.calledOnce;
           expect(readFileStub).to.have.been.calledOnce;
-          expect(awsDeploy.serverless.cli.log).to.have.been.calledOnce;
           expect(normalizeCloudFormationTemplateStub).to.have.been.calledWithExactly(
             awsDeploy.serverless.service.provider.compiledCloudFormationTemplate
           );
@@ -518,7 +516,6 @@ describe('checkForChanges', () => {
         expect(normalizeCloudFormationTemplateStub).to.have.been.calledOnce;
         expect(globbySyncStub).to.have.been.calledOnce;
         expect(readFileStub).to.have.been.calledTwice;
-        expect(awsDeploy.serverless.cli.log).to.have.been.calledOnce;
         expect(normalizeCloudFormationTemplateStub).to.have.been.calledWithExactly(
           awsDeploy.serverless.service.provider.compiledCloudFormationTemplate
         );
@@ -1100,7 +1097,7 @@ describe('test/unit/lib/plugins/aws/deploy/lib/checkForChanges.test.js', () => {
     expect(stdoutData).to.include(
       [
         'WARNING: Not authorized to perform: lambda:GetFunction for at least one of the lambda functions.',
-        ' Deployment will not be skipped even if service files did not change. ',
+        ' Deployment will not be skipped even if service files did not change.',
       ].join('')
     );
   });
@@ -1177,6 +1174,27 @@ describe('test/unit/lib/plugins/aws/deploy/lib/checkForChanges.test.js', () => {
             listObjectsV2: async () => generateMatchingListObjectsResponse(serverless),
             headObject: async (params) => generateMatchingHeadObjectResponse(serverless, params),
           },
+          CloudFormation: {
+            ...commonAwsSdkMock.CloudFormation,
+            describeStackResource: sandbox
+              .stub()
+              .onFirstCall()
+              .resolves({
+                StackResourceDetail: { PhysicalResourceId: 'deployment-bucket' },
+              })
+              .callsFake(async (params) => {
+                const naming = serverless.getProvider('aws').naming;
+                return {
+                  StackResourceDetail: {
+                    StackName: naming.getStackName(),
+                    LogicalResourceId: params.LogicalResourceId,
+                    PhysicalResourceId: `${naming.getStackName()}-${
+                      params.LogicalResourceId
+                    }-xxxxx`,
+                  },
+                };
+              }),
+          },
           CloudWatchLogs: {
             deleteSubscriptionFilter: deleteStub,
             describeSubscriptionFilters: async () => {
@@ -1193,14 +1211,6 @@ describe('test/unit/lib/plugins/aws/deploy/lib/checkForChanges.test.js', () => {
                     )}-xxxxx`,
                     destinationArn: `arn:aws:lambda:us-east-1:999999999999:function:${functionName}`,
                   },
-                  {
-                    filterName: `${naming.getStackName()}-${naming.getCloudWatchLogLogicalId(
-                      'Fn2',
-                      1
-                    )}-xxxxx`,
-                    destinationArn:
-                      'arn:aws:lambda:us-east-1:999999999999:function:test-checkForChanges-cdr3ogg-dev-fn1',
-                  },
                 ],
               };
             },
@@ -1210,7 +1220,7 @@ describe('test/unit/lib/plugins/aws/deploy/lib/checkForChanges.test.js', () => {
       expect(deleteStub).to.not.have.been.called;
     });
 
-    it('should not attempt to delete filter by 2 subscription filter per log group', async () => {
+    it('should not attempt to delete filter for 2 subscription filter per log group include externals', async () => {
       const deleteStub = sandbox.stub();
       let serverless;
       await runServerless({
@@ -1233,6 +1243,23 @@ describe('test/unit/lib/plugins/aws/deploy/lib/checkForChanges.test.js', () => {
             listObjectsV2: async () => generateMatchingListObjectsResponse(serverless),
             headObject: async (params) => generateMatchingHeadObjectResponse(serverless, params),
           },
+          CloudFormation: {
+            ...commonAwsSdkMock.CloudFormation,
+            describeStackResource: sandbox
+              .stub()
+              .onFirstCall()
+              .resolves({
+                StackResourceDetail: { PhysicalResourceId: 'deployment-bucket' },
+              })
+              .callsFake(async (params) => {
+                const naming = serverless.getProvider('aws').naming;
+                throw new Error(
+                  `Resource ${
+                    params.LogicalResourceId
+                  } does not exist for stack ${naming.getStackName()}`
+                );
+              }),
+          },
           CloudWatchLogs: {
             deleteSubscriptionFilter: deleteStub,
             describeSubscriptionFilters: async () => {
@@ -1242,7 +1269,7 @@ describe('test/unit/lib/plugins/aws/deploy/lib/checkForChanges.test.js', () => {
                   {
                     // destinationArn `arn:{partition}:lambda:{region}:{accountId}:function:{functionName}`
                     // filterName {stack name}-{logical id}-{random alphanumeric characters}
-                    filterName: `${naming.getStackName()}-${naming.getCloudWatchLogLogicalId(
+                    filterName: `external-stack-dev-${naming.getCloudWatchLogLogicalId(
                       'Fn1',
                       1
                     )}-xxxxx`,
@@ -1258,7 +1285,83 @@ describe('test/unit/lib/plugins/aws/deploy/lib/checkForChanges.test.js', () => {
       expect(deleteStub).to.not.have.been.called;
     });
 
-    it('should attempt to delete filter over 2 subscription filter per log group', async () => {
+    it('should throw an error if external defined subscription filter cause over 2 subscription filter per log group.', async () => {
+      const deleteStub = sandbox.stub();
+      let serverless;
+      const promise = runServerless({
+        fixture: 'checkForChanges',
+        command: 'deploy',
+        configExt: {
+          functions: {
+            fn1: {
+              events: [
+                { cloudwatchLog: 'someLogGroupName' },
+                { cloudwatchLog: 'someLogGroupName' },
+              ],
+            },
+          },
+        },
+        lastLifecycleHookName: 'aws:deploy:deploy:checkForChanges',
+        env: { AWS_CONTAINER_CREDENTIALS_FULL_URI: 'ignore' },
+        hooks: {
+          beforeInstanceInit: (serverlessInstance) => (serverless = serverlessInstance),
+        },
+        awsRequestStubMap: {
+          ...commonAwsSdkMock,
+          Lambda: {
+            getFunction: { Configuration: { LastModified: '2021-05-20T15:34:16.494+0000' } },
+          },
+          S3: {
+            listObjectsV2: async () => generateMatchingListObjectsResponse(serverless),
+            headObject: async (params) => generateMatchingHeadObjectResponse(serverless, params),
+          },
+          CloudFormation: {
+            ...commonAwsSdkMock.CloudFormation,
+            describeStackResource: sandbox
+              .stub()
+              .onFirstCall()
+              .resolves({
+                StackResourceDetail: { PhysicalResourceId: 'deployment-bucket' },
+              })
+              .callsFake(async (params) => {
+                const naming = serverless.getProvider('aws').naming;
+                throw new Error(
+                  `Resource ${
+                    params.LogicalResourceId
+                  } does not exist for stack ${naming.getStackName()}`
+                );
+              }),
+          },
+          CloudWatchLogs: {
+            deleteSubscriptionFilter: deleteStub,
+            describeSubscriptionFilters: async () => {
+              const naming = serverless.getProvider('aws').naming;
+              return {
+                subscriptionFilters: [
+                  {
+                    // destinationArn `arn:{partition}:lambda:{region}:{accountId}:function:{functionName}`
+                    // filterName {stack name}-{logical id}-{random alphanumeric characters}
+                    filterName: `external-stack-dev-${naming.getCloudWatchLogLogicalId(
+                      'Fn1',
+                      1
+                    )}-xxxxx`,
+                    destinationArn:
+                      'arn:aws:lambda:us-east-1:999999999999:function:test-checkForChanges-cdr3ogg-dev-fn1',
+                  },
+                ],
+              };
+            },
+          },
+        },
+      });
+
+      await expect(promise).to.eventually.be.rejected.and.have.property(
+        'code',
+        'CLOUDWATCHLOG_LOG_GROUP_EVENT_PER_FUNCTION_LIMIT_EXCEEDED'
+      );
+    });
+
+    it('should attempt to delete subscription filter not match as any of new subscription filter', async () => {
       const deleteStub = sandbox.stub();
       let serverless;
       const { awsNaming } = await runServerless({
@@ -1281,6 +1384,27 @@ describe('test/unit/lib/plugins/aws/deploy/lib/checkForChanges.test.js', () => {
             listObjectsV2: async () => generateMatchingListObjectsResponse(serverless),
             headObject: async (params) => generateMatchingHeadObjectResponse(serverless, params),
           },
+          CloudFormation: {
+            ...commonAwsSdkMock.CloudFormation,
+            describeStackResource: sandbox
+              .stub()
+              .onFirstCall()
+              .resolves({
+                StackResourceDetail: { PhysicalResourceId: 'deployment-bucket' },
+              })
+              .callsFake(async (params) => {
+                const naming = serverless.getProvider('aws').naming;
+                return {
+                  StackResourceDetail: {
+                    StackName: naming.getStackName(),
+                    LogicalResourceId: params.LogicalResourceId,
+                    PhysicalResourceId: `${naming.getStackName()}-${
+                      params.LogicalResourceId
+                    }-xxxxx`,
+                  },
+                };
+              }),
+          },
           CloudWatchLogs: {
             deleteSubscriptionFilter: deleteStub,
             describeSubscriptionFilters: async () => {
@@ -1297,15 +1421,6 @@ describe('test/unit/lib/plugins/aws/deploy/lib/checkForChanges.test.js', () => {
                     destinationArn:
                       'arn:aws:lambda:us-east-1:999999999999:function:test-checkForChanges-cdr3ogg-dev-fn1',
                   },
-                  {
-                    filterName: `${naming.getStackName()}-${naming.getCloudWatchLogLogicalId(
-                      'Fn2',
-                      2
-                    )}-xxxxx`,
-                    destinationArn: `arn:aws:lambda:us-east-1:999999999999:function:${
-                      serverless.service.getFunction('fn1').name
-                    }`,
-                  },
                 ],
               };
             },
@@ -1316,7 +1431,7 @@ describe('test/unit/lib/plugins/aws/deploy/lib/checkForChanges.test.js', () => {
         logGroupName: 'someLogGroupName',
         filterName: `${awsNaming.getStackName()}-${awsNaming.getCloudWatchLogLogicalId(
           'Fn2',
-          2
+          1
         )}-xxxxx`,
       });
     });
@@ -1351,12 +1466,34 @@ describe('test/unit/lib/plugins/aws/deploy/lib/checkForChanges.test.js', () => {
             listObjectsV2: async () => generateMatchingListObjectsResponse(serverless),
             headObject: async (params) => generateMatchingHeadObjectResponse(serverless, params),
           },
+          CloudFormation: {
+            ...commonAwsSdkMock.CloudFormation,
+            describeStackResource: sandbox
+              .stub()
+              .onFirstCall()
+              .resolves({
+                StackResourceDetail: { PhysicalResourceId: 'deployment-bucket' },
+              })
+              .callsFake(async (params) => {
+                const naming = serverless.getProvider('aws').naming;
+                return {
+                  StackResourceDetail: {
+                    StackName: naming.getStackName(),
+                    LogicalResourceId: params.LogicalResourceId,
+                    PhysicalResourceId: `${naming.getStackName()}-${
+                      params.LogicalResourceId
+                    }-xxxxx`,
+                  },
+                };
+              }),
+          },
           CloudWatchLogs: {
             deleteSubscriptionFilter: deleteStub,
             describeSubscriptionFilters: sandbox
               .stub()
               .onFirstCall()
               .callsFake(async () => {
+                const functionName = serverless.service.getFunction('fn1').name;
                 const naming = serverless.getProvider('aws').naming;
                 return {
                   subscriptionFilters: [
@@ -1365,27 +1502,24 @@ describe('test/unit/lib/plugins/aws/deploy/lib/checkForChanges.test.js', () => {
                         'Fn1',
                         1
                       )}-xxxxx`,
-                      destinationArn: `arn:aws:lambda:us-east-1:999999999999:function:${
-                        serverless.service.getFunction('fn1').name
-                      }`,
+                      destinationArn: `arn:aws:lambda:us-east-1:999999999999:function:${functionName}`,
                     },
                   ],
                 };
               })
               .onSecondCall()
               .callsFake(async () => {
+                const functionName = serverless.service.getFunction('fn1').name;
                 const naming = serverless.getProvider('aws').naming;
                 return {
                   subscriptionFilters: [
                     {
-                      // someLogGroupeName2 was previously the third event
+                      // someLogGroupeName2 was previously the first event
                       filterName: `${naming.getStackName()}-${naming.getCloudWatchLogLogicalId(
                         'Fn1',
                         1
                       )}-xxxxx`,
-                      destinationArn: `arn:aws:lambda:us-east-1:999999999999:function:${
-                        serverless.service.getFunction('fn1').name
-                      }`,
+                      destinationArn: `arn:aws:lambda:us-east-1:999999999999:function:${functionName}`,
                     },
                   ],
                 };
@@ -1432,6 +1566,27 @@ describe('test/unit/lib/plugins/aws/deploy/lib/checkForChanges.test.js', () => {
             listObjectsV2: async () => generateMatchingListObjectsResponse(serverless),
             headObject: async (params) => generateMatchingHeadObjectResponse(serverless, params),
           },
+          CloudFormation: {
+            ...commonAwsSdkMock.CloudFormation,
+            describeStackResource: sandbox
+              .stub()
+              .onFirstCall()
+              .resolves({
+                StackResourceDetail: { PhysicalResourceId: 'deployment-bucket' },
+              })
+              .callsFake(async (params) => {
+                const naming = serverless.getProvider('aws').naming;
+                return {
+                  StackResourceDetail: {
+                    StackName: naming.getStackName(),
+                    LogicalResourceId: params.LogicalResourceId,
+                    PhysicalResourceId: `${naming.getStackName()}-${
+                      params.LogicalResourceId
+                    }-xxxxx`,
+                  },
+                };
+              }),
+          },
           CloudWatchLogs: {
             deleteSubscriptionFilter: deleteStub,
             describeSubscriptionFilters: sandbox
@@ -1443,19 +1598,19 @@ describe('test/unit/lib/plugins/aws/deploy/lib/checkForChanges.test.js', () => {
                   subscriptionFilters: [
                     {
                       filterName: `${naming.getStackName()}-${naming.getCloudWatchLogLogicalId(
-                        'Fn1',
+                        'Fn2',
                         1
                       )}-xxxxx`,
                       destinationArn:
-                        'arn:aws:lambda:us-east-1:999999999999:function:test-checkForChanges-cdr3ogg-dev-fn1',
+                        'arn:aws:lambda:us-east-1:999999999999:function:test-checkForChanges-cdr3ogg-dev-fn2',
                     },
                     {
                       filterName: `${naming.getStackName()}-${naming.getCloudWatchLogLogicalId(
-                        'Fn1',
+                        'Fn2',
                         2
                       )}-xxxxx`,
                       destinationArn:
-                        'arn:aws:lambda:us-east-1:999999999999:function:test-checkForChanges-cdr3ogg-dev-fn1',
+                        'arn:aws:lambda:us-east-1:999999999999:function:test-checkForChanges-cdr3ogg-dev-fn2',
                     },
                   ],
                 };
@@ -1468,14 +1623,14 @@ describe('test/unit/lib/plugins/aws/deploy/lib/checkForChanges.test.js', () => {
       expect(deleteStub).to.have.been.calledWith({
         logGroupName: 'someLogGroupName',
         filterName: `${awsNaming.getStackName()}-${awsNaming.getCloudWatchLogLogicalId(
-          'Fn1',
+          'Fn2',
           1
         )}-xxxxx`,
       });
       expect(deleteStub).to.have.been.calledWith({
         logGroupName: 'someLogGroupName',
         filterName: `${awsNaming.getStackName()}-${awsNaming.getCloudWatchLogLogicalId(
-          'Fn1',
+          'Fn2',
           2
         )}-xxxxx`,
       });

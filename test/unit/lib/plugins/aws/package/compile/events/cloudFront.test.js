@@ -1,7 +1,6 @@
 'use strict';
 
 const chai = require('chai');
-const sandbox = require('sinon');
 const AwsProvider = require('../../../../../../../../lib/plugins/aws/provider');
 const AwsCompileCloudFrontEvents = require('../../../../../../../../lib/plugins/aws/package/compile/events/cloudFront');
 const Serverless = require('../../../../../../../../lib/Serverless');
@@ -77,42 +76,7 @@ describe('AwsCompileCloudFrontEvents', () => {
       },
     };
     serverless.setProvider('aws', new AwsProvider(serverless, options));
-    serverless.cli = { log: sandbox.spy() };
     awsCompileCloudFrontEvents = new AwsCompileCloudFrontEvents(serverless, options);
-  });
-
-  describe('#constructor()', () => {
-    it('should use "before:remove:remove" hook to log a message before removing the service', () => {
-      serverless.processedInput.commands = ['remove'];
-      serverless.service.functions = {
-        first: {
-          events: [
-            {
-              cloudFront: {
-                eventType: 'viewer-request',
-                origin: 's3://bucketname.s3.amazonaws.com/files',
-              },
-            },
-          ],
-        },
-      };
-      const awsCompileCloudFrontEventsRemoval = new AwsCompileCloudFrontEvents(serverless, options);
-
-      awsCompileCloudFrontEventsRemoval.hooks['before:remove:remove']();
-      expect(awsCompileCloudFrontEventsRemoval.serverless.cli.log).to.have.been.calledOnce;
-      expect(awsCompileCloudFrontEventsRemoval.serverless.cli.log.args[0][0]).to.include(
-        'remove your Lambda@Edge functions'
-      );
-    });
-  });
-
-  describe('#logRemoveReminder()', () => {
-    it('should not log an info message if the users wants to remove the stack without a cloudFront event', () => {
-      serverless.processedInput.commands = ['remove'];
-      const awsCompileCloudFrontEventsRemoval = new AwsCompileCloudFrontEvents(serverless, options);
-
-      expect(awsCompileCloudFrontEventsRemoval.serverless.cli.log).not.to.have.been.calledOnce;
-    });
   });
 
   describe('#validate()', () => {
@@ -1765,7 +1729,7 @@ describe('test/unit/lib/plugins/aws/package/compile/events/cloudFront.test.js', 
           command: 'package',
           configExt: {
             functions: {
-              foo: {
+              basic: {
                 handler: 'myLambdaAtEdge.handler',
                 events: [
                   {
@@ -1794,7 +1758,7 @@ describe('test/unit/lib/plugins/aws/package/compile/events/cloudFront.test.js', 
           configExt: {
             disabledDeprecations: ['CLOUDFRONT_CACHE_BEHAVIOR_FORWARDED_VALUES_AND_TTL'],
             functions: {
-              foo: {
+              basic: {
                 handler: 'myLambdaAtEdge.handler',
                 events: [
                   {
@@ -1829,7 +1793,7 @@ describe('test/unit/lib/plugins/aws/package/compile/events/cloudFront.test.js', 
         command: 'package',
         configExt: {
           functions: {
-            foo: {
+            basic: {
               handler: 'myLambdaAtEdge.handler',
               events: [
                 {
@@ -1891,6 +1855,7 @@ describe('test/unit/lib/plugins/aws/package/compile/events/cloudFront.test.js', 
     const stage = 'custom-stage';
     const cachePolicyName = 'allInCache';
     const cachePolicyId = '08627262-05a9-4f76-9ded-b50ca2e3a84f';
+    const cachePolicyId2 = '4135ea2d-6df8-44a3-9df3-4b5a84be39ad';
     const cachePolicyConfig = {
       DefaultTTL: 60,
       MinTTL: 30,
@@ -1996,6 +1961,57 @@ describe('test/unit/lib/plugins/aws/package/compile/events/cloudFront.test.js', 
                 },
               ],
             },
+            fnCachePolicyManagedSetViaBehavior: {
+              handler: 'myLambdaAtEdge.handler',
+              events: [
+                {
+                  cloudFront: {
+                    origin: 's3://bucketname.s3.amazonaws.com',
+                    eventType: 'viewer-response',
+                    pathPattern: 'managedPolicySetViaBehavior',
+                    behavior: {
+                      CachePolicyId: cachePolicyId,
+                    },
+                  },
+                },
+              ],
+            },
+            fnCachePolicySetViaCachePolicyIdAndBehavior: {
+              handler: 'myLambdaAtEdge.handler',
+              events: [
+                {
+                  cloudFront: {
+                    origin: 's3://bucketname.s3.amazonaws.com',
+                    eventType: 'viewer-response',
+                    pathPattern: 'policySetViaCachePolicyIdAndBehavior',
+                    cachePolicy: {
+                      id: cachePolicyId,
+                    },
+                    behavior: {
+                      CachePolicyId: cachePolicyId2,
+                    },
+                  },
+                },
+              ],
+            },
+            fnCachePolicySetViaCachePolicyNameAndBehavior: {
+              handler: 'myLambdaAtEdge.handler',
+              events: [
+                {
+                  cloudFront: {
+                    origin: 's3://bucketname.s3.amazonaws.com',
+                    eventType: 'viewer-response',
+                    pathPattern: 'policySetViaCachePolicyNameAndBehavior',
+                    cachePolicy: {
+                      name: cachePolicyName,
+                    },
+                    behavior: {
+                      CachePolicyId: cachePolicyId2,
+                    },
+                  },
+                },
+              ],
+            },
           },
         },
       });
@@ -2087,7 +2103,7 @@ describe('test/unit/lib/plugins/aws/package/compile/events/cloudFront.test.js', 
     });
     it('should ignore provider VPC config', () => {
       const edgeResolvedName = naming.getLambdaLogicalId('fnOriginResponse');
-      const otherResolvedName = naming.getLambdaLogicalId('foo');
+      const otherResolvedName = naming.getLambdaLogicalId('basic');
       expect(cfResources[edgeResolvedName].Properties).not.to.contain.keys('VpcConfig');
       expect(cfResources[otherResolvedName].Properties).to.contain.keys('VpcConfig');
     });
@@ -2111,6 +2127,27 @@ describe('test/unit/lib/plugins/aws/package/compile/events/cloudFront.test.js', 
 
     it('Should attach a cache policy to a cloudfront behavior when specified by id in lambda config', () => {
       expect(getAssociatedCacheBehavior('managedPolicy').CachePolicyId).to.eq(cachePolicyId);
+    });
+
+    it('Should attach a cache policy to a cloudfront behavior when specified by id via `behavior.CachePolicyId` in lambda config', () => {
+      expect(getAssociatedCacheBehavior('managedPolicySetViaBehavior').CachePolicyId).to.eq(
+        cachePolicyId
+      );
+    });
+
+    it('Should attach a cache policy specified via `cachePolicy.id` to a cloudfront behavior when specified via both of `cachePolicy.id` and `behavior.CachePolicyId` in lambda config', () => {
+      expect(
+        getAssociatedCacheBehavior('policySetViaCachePolicyIdAndBehavior').CachePolicyId
+      ).to.eq(cachePolicyId);
+    });
+
+    it('Should attach a cache policy specified via `cachePolicy.name` to a cloudfront behavior when specified via both of `cachePolicy.name` and `behavior.CachePolicyId` in lambda config', () => {
+      const cachePolicyLogicalId = naming.getCloudFrontCachePolicyLogicalId(cachePolicyName);
+      expect(
+        getAssociatedCacheBehavior('policySetViaCachePolicyNameAndBehavior').CachePolicyId
+      ).to.deep.eq({
+        Ref: cachePolicyLogicalId,
+      });
     });
 
     it('Should attach a default cache policy when none are provided, and no deprecated behavior values are used', () => {

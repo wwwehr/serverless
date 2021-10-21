@@ -1,8 +1,8 @@
 'use strict';
 
 const chai = require('chai');
-const getHashForFilePath = require('../../../../../../../lib/plugins/aws/utils/getHashForFilePath');
-const fs = require('fs');
+const getHashForFilePath = require('../../../../../../../lib/plugins/aws/package/lib/getHashForFilePath');
+const fsp = require('fs').promises;
 const path = require('path');
 
 chai.use(require('chai-as-promised'));
@@ -13,7 +13,7 @@ describe('getHashForFilePath', () => {
   let filePath;
   before(async () => {
     filePath = path.join(process.cwd(), 'file.txt');
-    await fs.promises.writeFile(filePath, 'content');
+    await fsp.writeFile(filePath, 'content');
   });
 
   it('correctly generates hash for existing file', async () => {

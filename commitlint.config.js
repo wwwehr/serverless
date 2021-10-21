@@ -11,6 +11,7 @@ module.exports = {
       [
         '',
         'API',
+        'AWS ActiveMQ',
         'AWS ALB',
         'AWS Alexa',
         'AWS API Gateway',
@@ -31,6 +32,7 @@ module.exports = {
         'AWS Layers',
         'AWS Local Invocation',
         'AWS MSK',
+        'AWS RabbitMQ',
         'AWS S3',
         'AWS Schedule',
         'AWS SNS',

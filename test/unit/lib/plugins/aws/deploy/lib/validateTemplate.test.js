@@ -36,9 +36,6 @@ describe('validateTemplate', () => {
       },
     };
     validateTemplateStub = sinon.stub(awsDeploy.provider, 'request');
-    awsDeploy.serverless.cli = {
-      log: sinon.spy(),
-    };
   });
 
   afterEach(() => {
@@ -50,7 +47,6 @@ describe('validateTemplate', () => {
       validateTemplateStub.resolves();
 
       await awsDeploy.validateTemplate();
-      expect(awsDeploy.serverless.cli.log).to.have.been.called;
       expect(validateTemplateStub).to.have.been.calledOnce;
       expect(validateTemplateStub).to.have.been.calledWithExactly(
         'CloudFormation',
@@ -66,7 +62,6 @@ describe('validateTemplate', () => {
       validateTemplateStub.rejects({ message: 'Some error while validating' });
 
       return expect(awsDeploy.validateTemplate()).to.be.rejected.then((error) => {
-        expect(awsDeploy.serverless.cli.log).to.have.been.called;
         expect(validateTemplateStub).to.have.been.calledOnce;
         expect(validateTemplateStub).to.have.been.calledWithExactly(
           'CloudFormation',

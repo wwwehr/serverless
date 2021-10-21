@@ -13,6 +13,10 @@ if (require('../lib/utils/tabCompletion/isSupported') && process.argv[2] === 'co
   return;
 }
 
+// Setup log writing
+require('@serverless/utils/log-reporters/node');
+const { legacy, log, progress } = require('@serverless/utils/log');
+
 const handleError = require('../lib/cli/handle-error');
 const {
   storeLocally: storeTelemetryLocally,
@@ -34,11 +38,16 @@ let hasTelemetryBeenReported = false;
 
 // Inquirer async operations do not keep node process alive
 // We need to issue a keep alive timer so process does not die
-// to propery handle e.g. `SIGINT` interrupt
+// to properly handle e.g. `SIGINT` interrupt
 const keepAliveTimer = setTimeout(() => {}, 60 * 60 * 1000);
+
+// Names of the commands which are configured independently in root `commands` folder
+// and not in Serverless class internals
+const notIntegratedCommands = new Set(['doctor', 'plugin install', 'plugin uninstall']);
 
 process.once('uncaughtException', (error) => {
   clearTimeout(keepAliveTimer);
+  progress.clear();
   const cachedHasTelemetryBeenReported = hasTelemetryBeenReported;
   hasTelemetryBeenReported = true;
   handleError(error, {
@@ -58,6 +67,7 @@ process.once('uncaughtException', (error) => {
 require('signal-exit/signals').forEach((signal) => {
   process.once(signal, () => {
     clearTimeout(keepAliveTimer);
+    progress.clear();
     // If there's another listener (e.g. we're in deamon context or reading stdin input)
     // then let the other listener decide how process will exit
     const isOtherSigintListener = Boolean(process.listenerCount(signal));
@@ -115,7 +125,7 @@ const processSpanPromise = (async () => {
     // If version number request, show it and abort
     if (options.version) {
       await require('../lib/cli/render-version')();
-      logDeprecation.printSummary();
+      await logDeprecation.printSummary();
       return;
     }
 
@@ -132,6 +142,7 @@ const processSpanPromise = (async () => {
     const path = require('path');
     const uuid = require('uuid');
     const _ = require('lodash');
+    const clear = require('ext/object/clear');
     const Serverless = require('../lib/Serverless');
     const resolveVariables = require('../lib/configuration/variables/resolve');
     const isPropertyResolved = require('../lib/configuration/variables/is-property-resolved');
@@ -178,6 +189,7 @@ const processSpanPromise = (async () => {
 
       const resolveConfigurationPath = require('../lib/cli/resolve-configuration-path');
       const readConfiguration = require('../lib/configuration/read');
+      const resolveProviderName = require('../lib/configuration/resolve-provider-name');
 
       // Resolve eventual service configuration path
       configurationPath = await resolveConfigurationPath();
@@ -235,7 +247,6 @@ const processSpanPromise = (async () => {
           }
 
           const resolveVariablesMeta = require('../lib/configuration/variables/resolve-meta');
-          const resolveProviderName = require('../lib/configuration/resolve-provider-name');
 
           variablesMeta = resolveVariablesMeta(configuration);
 
@@ -274,6 +285,7 @@ const processSpanPromise = (async () => {
             ));
           }
 
+          let envVarNamesNeededForDotenvResolution;
           if (variablesMeta.size) {
             // Some properties are configured with variables
 
@@ -289,6 +301,7 @@ const processSpanPromise = (async () => {
                 opt: require('../lib/configuration/variables/sources/opt'),
                 self: require('../lib/configuration/variables/sources/self'),
                 strToBool: require('../lib/configuration/variables/sources/str-to-bool'),
+                sls: require('../lib/configuration/variables/sources/instance-dependent/get-sls')(),
               },
               options: filterSupportedOptions(options, { commandSchema, providerName }),
               fulfilledSources: new Set(['file', 'self', 'strToBool']),
@@ -345,21 +358,63 @@ const processSpanPromise = (async () => {
               }
             }
 
+            resolverConfiguration.fulfilledSources.add('env');
             if (
-              !ensureResolvedProperty('provider\0stage', { shouldSilentlyReturnIfLegacyMode: true })
+              !isPropertyResolved(variablesMeta, 'provider\0stage') ||
+              !isPropertyResolved(variablesMeta, 'useDotenv')
             ) {
-              return;
-            }
+              // Assume "env" source fulfilled for `provider.stage` and `useDotenv` resolution.
+              // To pick eventual resolution conflict, track what env variables were reported
+              // misssing when applying this resolution
+              const envSource = require('../lib/configuration/variables/sources/env');
+              envSource.missingEnvVariables.clear();
+              await resolveVariables({
+                ...resolverConfiguration,
+                propertyPathsToResolve: new Set(['provider\0stage', 'useDotenv']),
+              });
+              if (
+                eventuallyReportVariableResolutionErrors(
+                  configurationPath,
+                  configuration,
+                  variablesMeta
+                )
+              ) {
+                // Unrecoverable resolution errors, abort
+                variablesMeta = null;
+                return;
+              }
 
-            if (!ensureResolvedProperty('useDotenv')) return;
+              if (
+                !ensureResolvedProperty('provider\0stage', {
+                  shouldSilentlyReturnIfLegacyMode: true,
+                })
+              ) {
+                return;
+              }
+
+              if (!ensureResolvedProperty('useDotenv')) return;
+
+              envVarNamesNeededForDotenvResolution = envSource.missingEnvVariables;
+            }
           }
 
           // Load eventual environment variables from .env files
           await require('../lib/cli/conditionally-load-dotenv')(options, configuration);
 
-          if (!variablesMeta.size) return; // No properties configured with variables
+          if (envVarNamesNeededForDotenvResolution) {
+            for (const envVarName of envVarNamesNeededForDotenvResolution) {
+              if (process.env[envVarName]) {
+                throw new ServerlessError(
+                  'Cannot reliably resolve "env" variables due to resolution conflict.\n' +
+                    `Environment variable "${envVarName}" which influences resolution of ` +
+                    '".env" file were found to be defined in resolved ".env" file.' +
+                    'DOTENV_ENV_VAR_RESOLUTION_CONFLICT'
+                );
+              }
+            }
+          }
 
-          resolverConfiguration.fulfilledSources.add('env');
+          if (!variablesMeta.size) return; // No properties configured with variables
 
           if (isHelpRequest || commands[0] === 'plugin') {
             // We do not need full config resolved, we just need to know what
@@ -431,6 +486,15 @@ const processSpanPromise = (async () => {
             ensureResolvedProperty('provider\0region', { shouldSilentlyReturnIfLegacyMode: true });
           }
         })();
+
+        // Ensure to have full AWS commands schema loaded if we're in context of AWS provider
+        // It's not the case if not AWS service specific command was resolved
+        if (configuration && resolveProviderName(configuration) === 'aws') {
+          resolveInput.clear();
+          ({ command, commands, options, isHelpRequest, commandSchema } = resolveInput(
+            require('../lib/cli/commands-schema/aws-service')
+          ));
+        }
       } else {
         // In non-service context we recognize all AWS service commands
         resolveInput.clear();
@@ -441,30 +505,46 @@ const processSpanPromise = (async () => {
         // Validate result command and options
         require('../lib/cli/ensure-supported-command')();
       }
+    } else {
+      require('../lib/cli/ensure-supported-command')();
     }
 
     const configurationFilename = configuration && configurationPath.slice(serviceDir.length + 1);
 
-    if (isInteractiveSetup) {
-      require('../lib/cli/ensure-supported-command')(configuration);
+    const isStandaloneCommand = notIntegratedCommands.has(command);
 
-      if (!process.stdin.isTTY && !process.env.SLS_INTERACTIVE_SETUP_ENABLE) {
-        throw new ServerlessError(
-          'Attempted to run an interactive setup in non TTY environment.\n' +
-            "If that's intentended enforce with SLS_INTERACTIVE_SETUP_ENABLE=1 environment variable",
-          'INTERACTIVE_SETUP_IN_NON_TTY'
-        );
-      }
-      const { configuration: configurationFromInteractive } =
-        await require('../lib/cli/interactive-setup')({
+    if (!isHelpRequest && (isInteractiveSetup || isStandaloneCommand)) {
+      if (configuration) require('../lib/cli/ensure-supported-command')(configuration);
+      if (isInteractiveSetup) {
+        if (!process.stdin.isTTY && !process.env.SLS_INTERACTIVE_SETUP_ENABLE) {
+          throw new ServerlessError(
+            'Attempted to run an interactive setup in non TTY environment.\n' +
+              "If that's intentended enforce with SLS_INTERACTIVE_SETUP_ENABLE=1 environment variable",
+            'INTERACTIVE_SETUP_IN_NON_TTY'
+          );
+        }
+        const result = await require('../lib/cli/interactive-setup')({
           configuration,
           serviceDir,
           configurationFilename,
           options,
           commandUsage,
         });
+        if (result.configuration) {
+          configuration = result.configuration;
+        }
+      } else {
+        await require(`../commands/${commands.join('-')}`)({
+          configuration,
+          serviceDir,
+          configurationFilename,
+          options,
+        });
+      }
 
-      logDeprecation.printSummary();
+      progress.clear();
+
+      await logDeprecation.printSummary();
 
       if (!hasTelemetryBeenReported) {
         hasTelemetryBeenReported = true;
@@ -475,7 +555,7 @@ const processSpanPromise = (async () => {
               options,
               commandSchema,
               serviceDir,
-              configuration: configurationFromInteractive,
+              configuration,
               commandUsage,
               variableSources: variableSourcesInConfig,
             }),
@@ -529,7 +609,8 @@ const processSpanPromise = (async () => {
               ({ command, commands, options, isHelpRequest, commandSchema } =
                 resolveInput(commandsSchema));
               serverless.processedInput.commands = serverless.pluginManager.cliCommands = commands;
-              serverless.processedInput.options = serverless.pluginManager.cliOptions = options;
+              serverless.processedInput.options = options;
+              Object.assign(clear(serverless.pluginManager.cliOptions), options);
               hasFinalCommandSchema = true;
             }
           } else {
@@ -750,8 +831,9 @@ const processSpanPromise = (async () => {
         // Run command
         await serverless.run();
       }
+      progress.clear();
 
-      logDeprecation.printSummary();
+      await logDeprecation.printSummary();
 
       if (!hasTelemetryBeenReported) {
         hasTelemetryBeenReported = true;
@@ -790,10 +872,9 @@ const processSpanPromise = (async () => {
       try {
         await dashboardErrorHandler(error, serverless.invocationId);
       } catch (dashboardErrorHandlerError) {
-        const log = require('@serverless/utils/log');
         const tokenizeException = require('../lib/utils/tokenize-exception');
         const exceptionTokens = tokenizeException(dashboardErrorHandlerError);
-        log(
+        legacy.log(
           `Publication to Serverless Dashboard errored with:\n${' '.repeat('Serverless: '.length)}${
             exceptionTokens.isUserError || !exceptionTokens.stack
               ? exceptionTokens.message
@@ -801,10 +882,18 @@ const processSpanPromise = (async () => {
           }`,
           { color: 'orange' }
         );
+        log.warning(
+          `Publication to Serverless Dashboard errored with:\n${' '.repeat('Serverless: '.length)}${
+            exceptionTokens.isUserError || !exceptionTokens.stack
+              ? exceptionTokens.message
+              : exceptionTokens.stack
+          }`
+        );
       }
       throw error;
     }
   } catch (error) {
+    progress.clear();
     const cachedHasTelemetryBeenReported = hasTelemetryBeenReported;
     hasTelemetryBeenReported = true;
     handleError(error, {

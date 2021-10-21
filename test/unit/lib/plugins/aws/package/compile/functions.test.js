@@ -159,54 +159,6 @@ describe('AwsCompileFunctions', () => {
       });
     });
 
-    it('should add a logical role name provider role', () => {
-      awsCompileFunctions.serverless.service.provider.name = 'aws';
-      awsCompileFunctions.serverless.service.provider.role = 'LogicalNameRole';
-      awsCompileFunctions.serverless.service.functions = {
-        func: {
-          handler: 'func.function.handler',
-          name: 'new-service-dev-func',
-        },
-      };
-
-      return expect(awsCompileFunctions.compileFunctions()).to.be.fulfilled.then(() => {
-        expect(
-          awsCompileFunctions.serverless.service.provider.compiledCloudFormationTemplate.Resources
-            .FuncLambdaFunction.DependsOn
-        ).to.deep.equal(['FuncLogGroup', 'LogicalNameRole']);
-        expect(
-          awsCompileFunctions.serverless.service.provider.compiledCloudFormationTemplate.Resources
-            .FuncLambdaFunction.Properties.Role
-        ).to.deep.equal({
-          'Fn::GetAtt': [awsCompileFunctions.serverless.service.provider.role, 'Arn'],
-        });
-      });
-    });
-
-    it('should add a "Fn::GetAtt" Object provider role', () => {
-      awsCompileFunctions.serverless.service.provider.name = 'aws';
-      awsCompileFunctions.serverless.service.provider.role = {
-        'Fn::GetAtt': ['LogicalRoleName', 'Arn'],
-      };
-      awsCompileFunctions.serverless.service.functions = {
-        func: {
-          handler: 'func.function.handler',
-          name: 'new-service-dev-func',
-        },
-      };
-
-      return expect(awsCompileFunctions.compileFunctions()).to.be.fulfilled.then(() => {
-        expect(
-          awsCompileFunctions.serverless.service.provider.compiledCloudFormationTemplate.Resources
-            .FuncLambdaFunction.DependsOn
-        ).to.deep.equal(['FuncLogGroup', 'LogicalRoleName']);
-        expect(
-          awsCompileFunctions.serverless.service.provider.compiledCloudFormationTemplate.Resources
-            .FuncLambdaFunction.Properties.Role
-        ).to.deep.equal(awsCompileFunctions.serverless.service.provider.role);
-      });
-    });
-
     it('should add an ARN function role', () => {
       awsCompileFunctions.serverless.service.provider.name = 'aws';
       awsCompileFunctions.serverless.service.functions = {
@@ -242,7 +194,7 @@ describe('AwsCompileFunctions', () => {
         command: 'package',
       });
 
-      expect(cfTemplate.Resources.FooLambdaFunction.Properties.Role).to.eql({
+      expect(cfTemplate.Resources.BasicLambdaFunction.Properties.Role).to.eql({
         'Fn::GetAtt': ['role-b', 'Arn'],
       });
     });
@@ -1303,72 +1255,6 @@ describe('AwsCompileFunctions', () => {
   });
 
   describe('#compileRole()', () => {
-    it('adds the default role without DependsOn values', () => {
-      const role = 'IamRoleLambdaExecution';
-      const resource = { Properties: {} };
-      awsCompileFunctions.compileRole(resource, role);
-
-      expect(resource).to.deep.equal({
-        Properties: {
-          Role: {
-            'Fn::GetAtt': [role, 'Arn'],
-          },
-        },
-      });
-    });
-
-    it('adds a role based on a logical name with DependsOn values', () => {
-      const role = 'LogicalRoleName';
-      const resource = { Properties: {} };
-      awsCompileFunctions.compileRole(resource, role);
-
-      expect(resource).to.deep.equal({
-        DependsOn: [role],
-        Properties: {
-          Role: {
-            'Fn::GetAtt': [role, 'Arn'],
-          },
-        },
-      });
-    });
-
-    it('adds a role based on a Fn::GetAtt with DependsOn values', () => {
-      const role = { 'Fn::GetAtt': ['Foo', 'Arn'] };
-      const resource = { Properties: {} };
-      awsCompileFunctions.compileRole(resource, role);
-
-      expect(resource).to.deep.equal({
-        DependsOn: ['Foo'],
-        Properties: {
-          Role: role,
-        },
-      });
-    });
-
-    it('adds a role based on a Fn::ImportValue', () => {
-      const role = { 'Fn::ImportValue': 'Foo' };
-      const resource = { Properties: {} };
-      awsCompileFunctions.compileRole(resource, role);
-
-      expect(resource).to.deep.equal({
-        Properties: {
-          Role: role,
-        },
-      });
-    });
-
-    it('adds a role based on a predefined arn string', () => {
-      const role = 'arn:aws:xxx:*:*';
-      const resource = { Properties: {} };
-      awsCompileFunctions.compileRole(resource, role);
-
-      expect(resource).to.deep.equal({
-        Properties: {
-          Role: role,
-        },
-      });
-    });
-
     it('should not set unset properties when not specified in yml (layers, vpc, etc)', () => {
       awsCompileFunctions.serverless.service.functions = {
         func: {
@@ -1492,6 +1378,8 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
     };
 
     before(async () => {
+      const imageSha = '6bb600b4d6e1d7cf521097177dd0c4e9ea373edb91984a505333be8ac9455d38';
+      const imageWithSha = `000000000000.dkr.ecr.sa-east-1.amazonaws.com/test-lambda-docker@sha256:${imageSha}`;
       const { awsNaming, cfTemplate, fixtureData } = await runServerless({
         fixture: 'packageArtifact',
         command: 'package',
@@ -1521,6 +1409,7 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
               providerEnvVarA: 'providerEnvVarAValue',
               providerEnvVarB: 'providerEnvVarBValue',
               sharedEnvVar: 'valueFromProvider',
+              providerCfIfEnvVar: { 'Fn::If': ['cond', 'first', 'second'] },
             },
             memorySize: 4096,
             runtime: 'nodejs10.x',
@@ -1528,6 +1417,7 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
             versionFunctions: false,
           },
           functions: {
+            fnImage: { image: imageWithSha },
             foo: {
               vpc: {
                 subnetIds: ['subnet-02020202'],
@@ -1550,6 +1440,10 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
                 localMountPath: '/mnt/path',
                 arn: 'arn:aws:elasticfilesystem:us-east-1:111111111111:access-point/fsap-a1a1a1a1a1a1a1a1a',
               },
+            },
+            vpcNullify: {
+              vpc: null,
+              handler: 'index.handler',
             },
           },
         },
@@ -1593,6 +1487,12 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
 
       expect(VpcConfig.SecurityGroupIds).to.deep.equal(fooFunctionConfig.vpc.securityGroupIds);
       expect(VpcConfig.SubnetIds).to.deep.equal(fooFunctionConfig.vpc.subnetIds);
+    });
+
+    it('should allow `functions[].vpc` to specify no vpc', () => {
+      const Properties = cfResources[naming.getLambdaLogicalId('vpcNullify')].Properties;
+
+      expect(Properties.VpcConfig).to.be.undefined;
     });
 
     it('should support `provider.tags`', () => {
@@ -1763,6 +1663,35 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
       });
     });
 
+    it('should support `provider.architecture`', async () => {
+      const imageSha = '6bb600b4d6e1d7cf521097177dd0c4e9ea373edb91984a505333be8ac9455d38';
+      const imageWithSha = `000000000000.dkr.ecr.sa-east-1.amazonaws.com/test-lambda-docker@sha256:${imageSha}`;
+      const {
+        awsNaming: localNaming,
+        cfTemplate: { Resources: localResources },
+      } = await runServerless({
+        fixture: 'function',
+        command: 'package',
+        configExt: {
+          functions: { fnImage: { image: imageWithSha } },
+          provider: { architecture: 'arm64' },
+        },
+      });
+
+      expect(
+        localResources[localNaming.getLambdaLogicalId('basic')].Properties.Architectures
+      ).to.deep.equal(['arm64']);
+      expect(
+        localResources[localNaming.getLambdaLogicalId('fnImage')].Properties.Architectures
+      ).to.deep.equal(['arm64']);
+      expect(cfResources[naming.getLambdaLogicalId('fnImage')].Properties).to.not.have.property(
+        'Architectures'
+      );
+      expect(cfResources[naming.getLambdaLogicalId('foo')].Properties).to.not.have.property(
+        'Architectures'
+      );
+    });
+
     it('should support `vpc` defined with `Fn::Split`', async () => {
       const { awsNaming, cfTemplate, fixtureData } = await runServerless({
         fixture: 'function',
@@ -1783,7 +1712,7 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
 
       const providerConfig = fixtureData.serviceConfig.provider;
 
-      const { VpcConfig } = cfTemplate.Resources[awsNaming.getLambdaLogicalId('foo')].Properties;
+      const { VpcConfig } = cfTemplate.Resources[awsNaming.getLambdaLogicalId('basic')].Properties;
 
       expect(VpcConfig.SecurityGroupIds).to.deep.equal(providerConfig.vpc.securityGroupIds);
       expect(VpcConfig.SubnetIds).to.deep.equal(providerConfig.vpc.subnetIds);
@@ -1791,7 +1720,7 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
 
     describe('when custom IAM role is used', () => {
       let customRoleServiceConfig;
-      let fooFunctionRole;
+      let basicFunctionRole;
       let otherFunctionRole;
 
       before(async () => {
@@ -1805,13 +1734,14 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
               },
             },
             functions: {
-              foo: {
+              basic: {
                 role: 'arn:aws:iam::123456789012:role/fromFunction',
               },
             },
           },
         });
-        fooFunctionRole = cfTemplate.Resources[awsNaming.getLambdaLogicalId('foo')].Properties.Role;
+        basicFunctionRole =
+          cfTemplate.Resources[awsNaming.getLambdaLogicalId('basic')].Properties.Role;
         otherFunctionRole =
           cfTemplate.Resources[awsNaming.getLambdaLogicalId('other')].Properties.Role;
         customRoleServiceConfig = fixtureData.serviceConfig;
@@ -1824,9 +1754,9 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
       });
 
       it('should prefer `functions[].role` over `provider.iam.role`', () => {
-        const fooFunctionConfig = customRoleServiceConfig.functions.foo;
+        const basicFunctionConfig = customRoleServiceConfig.functions.basic;
 
-        expect(fooFunctionRole).to.equal(fooFunctionConfig.role);
+        expect(basicFunctionRole).to.equal(basicFunctionConfig.role);
       });
 
       it('should support `provider.iam.role` defined as CF function', async () => {
@@ -1845,32 +1775,53 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
         });
 
         const functionRole =
-          cfTemplate.Resources[awsNaming.getLambdaLogicalId('foo')].Properties.Role;
+          cfTemplate.Resources[awsNaming.getLambdaLogicalId('basic')].Properties.Role;
         expect(functionRole).to.deep.equal(fixtureData.serviceConfig.provider.iam.role);
       });
     });
   });
 
-  describe.skip('TODO: `provider.role` variants', () => {
-    // After addressing remove also:
-    // https://github.com/serverless/serverless/blob/d8527d8b57e7e5f0b94ba704d9f53adb34298d99/lib/plugins/aws/package/compile/functions/index.test.js#L2222-L2286
-
+  describe('`provider.role` variants', () => {
     it('should support resource name', async () => {
-      await runServerless({ fixture: 'function', configExt: {}, command: 'package' });
-      // Replacement for
-      // https://github.com/serverless/serverless/blob/d8527d8b57e7e5f0b94ba704d9f53adb34298d99/lib/plugins/aws/package/compile/functions/index.test.js#L235-L257
-      //
-      // Confirm that provider.role is refereenced at Function.Properties.Role
-      // and that it's added to function DependsOn
+      const { awsNaming, cfTemplate, fixtureData } = await runServerless({
+        fixture: 'function',
+        configExt: {
+          provider: {
+            iam: {
+              role: 'LogicalNameRole',
+            },
+          },
+        },
+        command: 'package',
+      });
+
+      const funcResource = cfTemplate.Resources[awsNaming.getLambdaLogicalId('basic')];
+      expect(funcResource.DependsOn).to.deep.equal(['BasicLogGroup', 'LogicalNameRole']);
+      expect(funcResource.Properties.Role).to.deep.equal({
+        'Fn::GetAtt': [fixtureData.serviceConfig.provider.iam.role, 'Arn'],
+      });
     });
 
     it('should support Fn::GetAtt function', async () => {
-      await runServerless({ fixture: 'function', configExt: {}, command: 'package' });
-      // Replacement for
-      // https://github.com/serverless/serverless/blob/d8527d8b57e7e5f0b94ba704d9f53adb34298d99/lib/plugins/aws/package/compile/functions/index.test.js#L259-L281
-      //
-      // Confirm that provider.role is refereenced at Function.Properties.Role
-      // and that it's added to function DependsOn
+      const { awsNaming, cfTemplate, fixtureData } = await runServerless({
+        fixture: 'function',
+        configExt: {
+          provider: {
+            iam: {
+              role: {
+                'Fn::GetAtt': ['LogicalNameRole', 'Arn'],
+              },
+            },
+          },
+        },
+        command: 'package',
+      });
+
+      const funcResource = cfTemplate.Resources[awsNaming.getLambdaLogicalId('basic')];
+      expect(funcResource.DependsOn).to.deep.equal(['BasicLogGroup', 'LogicalNameRole']);
+      expect(funcResource.Properties.Role).to.deep.equal(
+        fixtureData.serviceConfig.provider.iam.role
+      );
     });
   });
 
@@ -1889,7 +1840,7 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
         command: 'package',
       });
 
-      const functionCfLogicalId = awsNaming.getLambdaLogicalId('foo');
+      const functionCfLogicalId = awsNaming.getLambdaLogicalId('basic');
 
       const originalVersionCfConfig = Object.values(originalTemplate.Resources).find(
         (resource) =>
@@ -1932,10 +1883,21 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
         serverless: serverlessInstance,
         fixtureData,
       } = await runServerless({
-        fixture: 'functionDestinations',
+        fixture: 'function',
         command: 'package',
         configExt: {
           functions: {
+            target: {
+              handler: 'target.handler',
+            },
+            trigger: {
+              handler: 'trigger.handler',
+              destinations: { onSuccess: 'target' },
+            },
+            fnArch: {
+              handler: 'target.handler',
+              architecture: 'arm64',
+            },
             fnTargetFailure: {
               handler: 'target.handler',
             },
@@ -1964,12 +1926,35 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
             fnImage: {
               image: imageWithSha,
             },
+            fnImageArch: {
+              image: imageWithSha,
+              architecture: 'arm64',
+            },
             fnImageWithConfig: {
               image: {
                 uri: imageWithSha,
                 workingDirectory: './workdir',
                 entryPoint: ['executable', 'param1'],
                 command: ['anotherexecutable'],
+              },
+            },
+            fnExternalLayer: {
+              handler: 'target.handler',
+              layers: [{ Ref: 'ExternalLambdaLayer' }],
+            },
+          },
+          resources: {
+            Resources: {
+              ExternalLambdaLayer: {
+                Type: 'AWS::Lambda::LayerVersion',
+                Properties: {
+                  CompatibleRuntimes: ['nodejs12.x'],
+                  Content: {
+                    S3Bucket: 'bucket',
+                    S3Key: 'key',
+                  },
+                  LayerName: 'externalLayer',
+                },
               },
             },
           },
@@ -2156,35 +2141,8 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
     });
 
     it('should support `Ref` references to external layers (not defined as a part of `layers` top-level property in configuration)', async () => {
-      const { cfTemplate, awsNaming } = await runServerless({
-        fixture: 'functionDestinations',
-        command: 'package',
-        configExt: {
-          functions: {
-            fnExternalLayer: {
-              handler: 'target.handler',
-              layers: [{ Ref: 'ExternalLambdaLayer' }],
-            },
-          },
-          resources: {
-            Resources: {
-              ExternalLambdaLayer: {
-                Type: 'AWS::Lambda::LayerVersion',
-                Properties: {
-                  CompatibleRuntimes: ['nodejs12.x'],
-                  Content: {
-                    S3Bucket: 'bucket',
-                    S3Key: 'key',
-                  },
-                  LayerName: 'externalLayer',
-                },
-              },
-            },
-          },
-        },
-      });
       expect(
-        cfTemplate.Resources[awsNaming.getLambdaLogicalId('fnExternalLayer')].Properties.Layers
+        cfResources[naming.getLambdaLogicalId('fnExternalLayer')].Properties.Layers
       ).to.deep.equal([{ Ref: 'ExternalLambdaLayer' }]);
     });
 
@@ -2196,6 +2154,21 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
     it.skip('TODO: should support `functions[].dependsOn`', () => {
       // Replacement for
       // https://github.com/serverless/serverless/blob/d8527d8b57e7e5f0b94ba704d9f53adb34298d99/lib/plugins/aws/package/compile/functions/index.test.js#L2381-L2397
+    });
+
+    it('should support `functions[].architecture`', () => {
+      expect(
+        cfResources[naming.getLambdaLogicalId('fnArch')].Properties.Architectures
+      ).to.deep.equal(['arm64']);
+      expect(
+        cfResources[naming.getLambdaLogicalId('fnImageArch')].Properties.Architectures
+      ).to.deep.equal(['arm64']);
+      expect(cfResources[naming.getLambdaLogicalId('fnImage')].Properties).to.not.have.property(
+        'Architectures'
+      );
+      expect(cfResources[naming.getLambdaLogicalId('target')].Properties).to.not.have.property(
+        'Architectures'
+      );
     });
 
     it('should support `functions[].destinations.onSuccess` referencing function in same stack', () => {
@@ -2347,7 +2320,7 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
         fixture: 'function',
         configExt: {
           functions: {
-            foo: {
+            basic: {
               fileSystemConfig: {
                 localMountPath: '/mnt/path',
                 arn: 'arn:aws:elasticfilesystem:us-east-1:111111111111:access-point/fsap-a1a1a1a1a1a1a1a1a',
@@ -2382,13 +2355,14 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
           cwd: serviceDir,
           command: 'package',
         });
-        const originalVersionArn = originalTemplate.Outputs.FooLambdaFunctionQualifiedArn.Value.Ref;
+        const originalVersionArn =
+          originalTemplate.Outputs.BasicLambdaFunctionQualifiedArn.Value.Ref;
 
         await updateConfig({
           functions: {
-            foo: {
+            basic: {
               tags: {
-                foo: 'bar',
+                basic: 'bar',
               },
               reservedConcurrency: 1,
             },
@@ -2398,10 +2372,10 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
           cwd: serviceDir,
           command: 'package',
         });
-        const updatedVersionArn = updatedTemplate.Outputs.FooLambdaFunctionQualifiedArn.Value.Ref;
+        const updatedVersionArn = updatedTemplate.Outputs.BasicLambdaFunctionQualifiedArn.Value.Ref;
 
         expect(
-          updatedTemplate.Resources.FooLambdaFunction.Properties.ReservedConcurrentExecutions
+          updatedTemplate.Resources.BasicLambdaFunction.Properties.ReservedConcurrentExecutions
         ).to.equal(1);
 
         expect(originalVersionArn).to.equal(updatedVersionArn);
@@ -2587,7 +2561,7 @@ describe('lib/plugins/aws/package/compile/functions/index.test.js', () => {
         command: 'deploy',
         configExt: {
           package: { artifact: 'some s3 url' },
-          functions: { foo: { package: { individually: true, artifact: 'other s3 url' } } },
+          functions: { basic: { package: { individually: true, artifact: 'other s3 url' } } },
         },
       });
     });
